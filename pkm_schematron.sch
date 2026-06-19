@@ -9,7 +9,7 @@ business rules that cannot be expressed in XML Schema alone.
 Schematron uses XPath patterns to validate complex cross-field
 constraints and conditional dependencies.
 
-**CHANGED** Rules marked with **CHANGED** were added or revised to remove
+**CHANGED** Rules marked with were added or revised to remove
 logic conflicts between optional fields, controlled values, evolution
 relationships, and battle-effectiveness metadata.
 -->
