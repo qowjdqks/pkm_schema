@@ -1,0 +1,1097 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!--
+=======================================================================
+  DESIGN INTENT
+=======================================================================
+  This schema describes Pokémon metadata records using a combination
+  of Dublin Core elements (dc:title, dc:identifier, dc:description)
+  and Pokémon-specific metadata elements defined in a custom namespace.
+
+  The schema was designed to support:
+    - Pokémon identification via a structured Pokédex-based identifier
+    - Type classification (primary and optional secondary type)
+    - Evolution relationships using Pokémon Record Identifiers
+      (not plain integers) so that regional-form records can be
+      referenced without ambiguity
+    - Evolution method classification (Controlled Vocabulary)
+    - Battle strengths and weaknesses (type matchup metadata)
+    - Pokémon abilities (Authority Control; not enumeration)
+    - Regional variant classification (Controlled Vocabulary;
+      regional forms are SEPARATE records — see REGIONAL FORM note)
+    - Legendary / Mythical status classification
+    - Generation classification
+
+  REGIONAL FORM DESIGN NOTE:
+    리전폼은 타입, 특성, 배틀 특성이 원종과 달라질 수 있기 때문에
+    별도 레코드로 관리한다.
+    (Regional forms such as Alolan, Galarian, Hisuian, and Paldean
+    variants are managed as SEPARATE Pokémon Records because their
+    typing, abilities, and battle characteristics may differ
+    substantially from those of the original form.)
+
+  IDENTIFIER FORMAT:
+    Base / canonical form:
+      Three-digit Pokédex number only — e.g. 025, 037
+    Regional / form-specific record:
+      Three-digit number + hyphen + three-letter suffix
+      e.g. 037-KAN (Kantonian Vulpix), 037-ALO (Alolan Vulpix)
+    The suffix scheme lets evolvesFrom / evolvesTo target the exact
+    regional record rather than just the species number.
+
+  CONTROLLED VOCABULARIES:
+    Implemented as xs:simpleType with xs:restriction and
+    xs:enumeration to ensure consistency and improve data quality.
+    Pokémon Ability values use Authority Control instead of
+    enumeration because the official list is extensive and grows
+    with each generation.
+
+  VALIDATION LAYERS:
+    1. XSD (this file)  — Structural and data type validation
+    2. Schematron (pkm_schematron.sch) — Business rule validation
+         * Evolution stage and method consistency
+         * Type consistency rules
+         * Identifier and blank-value consistency
+         * Relationship and battle-effectiveness conflict checks
+         * Legendary status guidelines
+=======================================================================
+-->
+
+<!--
+=======================================================================
+  AI USAGE STATEMENT
+=======================================================================
+  Initial prompt given to AI assistant:
+    "Create an XSD schema for a Pokémon metadata application profile
+     using Dublin Core and custom Pokémon elements."
+
+  Modifications made by the human author after AI generation:
+    1. Added controlled vocabularies for all 18 Pokémon elemental types.
+    2. Added EvolutionStageType controlled vocabulary element.
+    3. Added EvolutionMethodTypeEnum controlled vocabulary element.
+    4. Replaced a generic typeEffectiveness element with separate
+       strongAgainst and weakAgainst elements for clarity.
+    5. Defined all minOccurs / maxOccurs cardinalities based on the
+       data dictionary rather than accepting AI defaults.
+    6. Added xs:annotation / xs:documentation for every element and
+       simpleType to meet the data dictionary documentation requirement.
+
+  Revision history — schema v1.1 (current):
+    [CHANGED-01] EvolutionMethodTypeEnum: "None" sentinel retained for
+                 backward compatibility; Controlled Vocabulary intent
+                 and per-value descriptions added to xs:documentation.
+    [CHANGED-02] RegionalVariantType: design-intent note added stating
+                 regional forms are managed as separate records;
+                 Controlled Vocabulary retained as xs:enumeration.
+    [CHANGED-03] evolvesFrom / evolvesTo: type changed from xs:integer
+                 to PokemonIdentifierType (xs:string with pattern) so
+                 regional-form records (e.g. 037-ALO) can be referenced.
+    [CHANGED-04] ability element added using Authority Control rather
+                 than enumeration; maxOccurs="unbounded" supports up to
+                 three abilities (standard, secondary, hidden).
+    [CHANGED-05] PokemonIdentifierType: xs:documentation updated with
+                 explicit regional-form suffix examples (037-KAN vs
+                 037-ALO) to clarify the identifier design.
+    [CHANGED-06] All Design Intent comments, inline XML comments, and
+                 xs:documentation blocks updated throughout.
+    [CHANGED-07] xs:annotation / xs:documentation added to ref= Dublin
+                 Core element declarations (dc:title, dc:identifier,
+                 dc:description) to satisfy the documentation checklist.
+    [CHANGED-08] Nested XML comment syntax error fixed (stray "- ->" removed
+                 from AI Usage Statement block).
+=======================================================================
+-->
+
+<xs:schema
+    xmlns:xs="http://www.w3.org/2001/XMLSchema"
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:pkm="http://example.org/pokemon"
+    targetNamespace="http://example.org/pokemon"
+    xmlns="http://example.org/pokemon"
+    elementFormDefault="qualified">
+
+    <!--
+      Root schema note:
+      This XSD defines the Pokémon metadata application profile.
+      It combines Dublin Core (imported below) with a custom pkm:
+      namespace for Pokémon-specific elements and controlled vocabularies.
+      elementFormDefault="qualified" requires all locally declared
+      elements to carry the pkm: namespace prefix in instance documents,
+      preventing ambiguity with Dublin Core elements.
+    -->
+
+    <!-- =============================================================
+         EXTERNAL SCHEMA IMPORT
+         Dublin Core Simple Elements (dc:title, dc:identifier,
+         dc:description) are imported so they can be referenced with
+         ref= inside this schema. Dublin Core globally declares its
+         elements, making ref= valid here. The schemaLocation points
+         to the canonical DCMI XSD published by Dublin Core Metadata
+         Initiative.
+    ============================================================== -->
+    <xs:import
+        namespace="http://purl.org/dc/elements/1.1/"
+        schemaLocation="https://dublincore.org/schemas/xmls/simpledc20021212.xsd"/>
+
+
+    <!-- =============================================================
+         UTILITY STRING TYPES
+         Design intent: reusable string datatypes prevent blank values
+         and inconsistent version strings without coupling them to a
+         specific element. Defined once here; referenced by multiple
+         elements below.
+    ============================================================== -->
+
+    <!--
+      NonEmptyString
+      Design intent: guard against whitespace-only content in free-text
+      fields such as evolutionMethod and ability, where an empty value
+      would be misleading rather than simply absent.
+    -->
+    <xs:simpleType name="NonEmptyString">
+        <xs:annotation>
+            <xs:documentation>
+                Generic non-empty text datatype used for free-text fields
+                that must contain at least one non-whitespace character.
+                Applied to evolutionMethod and ability to prevent records
+                with blank but syntactically present values.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:restriction base="xs:string">
+            <xs:minLength value="1"/>
+            <xs:pattern value=".*\S.*"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <!--
+      PokemonIdentifierType  [CHANGED-05]
+      Design intent: a structured string pattern (NNN or NNN-AAA) serves
+      as the internal primary key for every Pokémon record and as the
+      data type for evolution cross-references (evolvesFrom, evolvesTo).
+      Using a string rather than xs:integer was necessary (CHANGED-03)
+      so that regional-form suffixes such as -ALO or -GAL can be
+      incorporated, making references to regional-form records
+      unambiguous.
+    -->
+    <xs:simpleType name="PokemonIdentifierType">
+        <xs:annotation>
+            <xs:documentation>
+                Structured identifier for a Pokémon record.
+                Pattern: [0-9]{3}(-[A-Z]{3})?
+
+                Base / canonical form (no suffix):
+                  025   — Pikachu
+                  037   — Vulpix (Kantonian, base form)
+
+                Regional / form-specific record (with suffix):
+                  037-KAN — Kantonian Vulpix (explicit suffix)
+                  037-ALO — Alolan Vulpix
+                  052-GAL — Galarian Meowth
+                  058-HIS — Hisuian Growlithe
+                  194-PAL — Paldean Wooper
+
+                Regional forms are managed as SEPARATE Pokémon Records
+                because their typing, abilities, and battle characteristics
+                may differ substantially from the original form.
+                (리전폼은 타입, 특성, 배틀 특성이 원종과 달라질 수 있기 때문에
+                별도 레코드로 관리한다.)
+
+                This type is used by: dc:identifier (Schematron-enforced),
+                evolvesFrom, and evolvesTo.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:restriction base="xs:string">
+            <xs:pattern value="[0-9]{3}(-[A-Z]{3})?"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <!--
+      ProfileVersionType
+      Design intent: constrain the profileVersion attribute to a
+      predictable semantic-version shape so that version comparisons
+      and migrations can be performed reliably without free-text parsing.
+    -->
+    <xs:simpleType name="ProfileVersionType">
+        <xs:annotation>
+            <xs:documentation>
+                Semantic version string for the metadata profile version
+                applied to a record. Allowed formats: N.N or N.N.N
+                where N is one or more digits (e.g. 1.0, 1.0.2).
+                Free-text version strings are rejected to ensure
+                consistent version management.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:restriction base="xs:string">
+            <xs:pattern value="[0-9]+(\.[0-9]+){1,2}"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+
+    <!-- =============================================================
+         CONTROLLED VOCABULARY: POKÉMON ELEMENTAL TYPES
+         Design intent: both PokemonType (for primaryType, strongAgainst,
+         weakAgainst) and SecondaryType (adds "None" for backward compat)
+         are defined as xs:enumeration restrictions so that invalid type
+         strings are rejected at parse time rather than at application
+         level. The 18 types exactly match the current official Pokémon
+         type chart as of Generation VI onward.
+    ============================================================== -->
+
+    <!--
+      PokemonType
+      Used by: primaryType, strongAgainst, weakAgainst
+    -->
+    <xs:simpleType name="PokemonType">
+        <xs:annotation>
+            <xs:documentation>
+                Controlled Vocabulary of the 18 standard Pokémon elemental
+                types used for primary typing and battle matchup metadata.
+                Values are case-sensitive and must match exactly.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="Normal"/>
+            <xs:enumeration value="Fire"/>
+            <xs:enumeration value="Water"/>
+            <xs:enumeration value="Electric"/>
+            <xs:enumeration value="Grass"/>
+            <xs:enumeration value="Ice"/>
+            <xs:enumeration value="Fighting"/>
+            <xs:enumeration value="Poison"/>
+            <xs:enumeration value="Ground"/>
+            <xs:enumeration value="Flying"/>
+            <xs:enumeration value="Psychic"/>
+            <xs:enumeration value="Bug"/>
+            <xs:enumeration value="Rock"/>
+            <xs:enumeration value="Ghost"/>
+            <xs:enumeration value="Dragon"/>
+            <xs:enumeration value="Dark"/>
+            <xs:enumeration value="Steel"/>
+            <xs:enumeration value="Fairy"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <!--
+      SecondaryType
+      Design intent: secondaryType requires an additional "None" sentinel
+      retained for backward compatibility with legacy records that
+      explicitly stored "None" rather than omitting the element.
+      Schematron Rule 2b warns when "None" is used, preferring omission.
+      Used by: secondaryType
+    -->
+    <xs:simpleType name="SecondaryType">
+        <xs:annotation>
+            <xs:documentation>
+                Controlled Vocabulary for the optional secondary elemental
+                type of a dual-type Pokémon. Identical to PokemonType but
+                includes "None" for backward compatibility with records
+                that populated secondaryType for single-type Pokémon.
+                Preferred practice: omit secondaryType entirely for
+                single-type Pokémon. Schematron Rule 2b warns when "None"
+                is explicitly present.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="None"/>
+            <xs:enumeration value="Normal"/>
+            <xs:enumeration value="Fire"/>
+            <xs:enumeration value="Water"/>
+            <xs:enumeration value="Electric"/>
+            <xs:enumeration value="Grass"/>
+            <xs:enumeration value="Ice"/>
+            <xs:enumeration value="Fighting"/>
+            <xs:enumeration value="Poison"/>
+            <xs:enumeration value="Ground"/>
+            <xs:enumeration value="Flying"/>
+            <xs:enumeration value="Psychic"/>
+            <xs:enumeration value="Bug"/>
+            <xs:enumeration value="Rock"/>
+            <xs:enumeration value="Ghost"/>
+            <xs:enumeration value="Dragon"/>
+            <xs:enumeration value="Dark"/>
+            <xs:enumeration value="Steel"/>
+            <xs:enumeration value="Fairy"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+
+    <!-- =============================================================
+         CONTROLLED VOCABULARY: EVOLUTION STAGE
+         Design intent: classifying a Pokémon's position in its
+         evolutionary family as a controlled value (rather than a
+         free-text field or integer stage number) enables Schematron
+         to enforce cross-field consistency rules — e.g., a record
+         with evolutionStage="Standalone" must not carry evolvesFrom,
+         evolvesTo, or evolutionMethodType.
+    ============================================================== -->
+
+    <!--
+      EvolutionStageType
+      Used by: evolutionStage (required)
+    -->
+    <xs:simpleType name="EvolutionStageType">
+        <xs:annotation>
+            <xs:documentation>
+                Controlled Vocabulary for the evolutionary position of a
+                Pokémon record within its family.
+
+                Allowed values:
+                  Base Form        — First stage; has evolvesTo, no evolvesFrom
+                                     (e.g. Pichu, Charmander, Eevee)
+                  Middle Evolution — Intermediate stage; has both evolvesFrom
+                                     and evolvesTo (e.g. Pikachu, Charmeleon)
+                  Final Evolution  — Last stage; has evolvesFrom, no evolvesTo
+                                     (e.g. Raichu, Charizard)
+                  Standalone       — No evolution chain; evolvesFrom, evolvesTo,
+                                     evolutionMethodType, and evolutionMethod
+                                     must all be absent (e.g. Mewtwo, Ditto)
+
+                Business rules cross-referencing this field are enforced
+                by Schematron Rules 1a–1f.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="Base Form"/>
+            <xs:enumeration value="Middle Evolution"/>
+            <xs:enumeration value="Final Evolution"/>
+            <xs:enumeration value="Standalone"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+
+    <!-- =============================================================
+         CONTROLLED VOCABULARY: EVOLUTION METHOD TYPE  [CHANGED-01]
+         Design intent: using a controlled list of method categories
+         rather than a free-text field ensures consistent querying
+         (e.g., "find all Stone-based evolutions"). The "None" sentinel
+         is retained only for backward compatibility; Schematron Rule 1g
+         rejects it for non-standalone records, and Rule 1a prevents its
+         presence when evolutionStage="Standalone".
+    ============================================================== -->
+
+    <!--
+      EvolutionMethodTypeEnum
+      Used by: evolutionMethodType (optional, conditional)
+    -->
+    <xs:simpleType name="EvolutionMethodTypeEnum">
+        <xs:annotation>
+            <xs:documentation>
+                Controlled Vocabulary for the category of evolution method.
+
+                Allowed values and their meanings:
+                  Level      — Pokémon evolves upon reaching a specific level
+                               (e.g. Charmander → Charmeleon at level 16)
+                  Stone      — Pokémon evolves by using an Evolution Stone item
+                               (e.g. Pikachu + Thunder Stone → Raichu)
+                  Friendship — Pokémon evolves through high friendship / happiness
+                               (e.g. Eevee → Espeon during daytime with high friendship)
+                  Trade      — Pokémon evolves when traded, optionally while
+                               holding a held item
+                               (e.g. Haunter → Gengar; Scyther + Metal Coat → Scizor)
+                  Time       — Pokémon evolves at a specific time of day
+                               (e.g. Eevee → Umbreon at night with high friendship)
+                  Location   — Pokémon evolves at or near a specific in-game location
+                               (e.g. Magneton → Magnezone near a Magnetic Field)
+                  Move       — Pokémon evolves after learning or using a specific move
+                               (e.g. Bonsly learns Mimic → Sudowoodo)
+                  Special    — Pokémon evolves through a unique or composite condition
+                               not covered by the above categories
+                               (e.g. Wurmple → Silcoon or Cascoon based on personality)
+                  None       — Backward compatibility sentinel; do not use for
+                               non-standalone records. Schematron Rule 1g flags this.
+                               Preferred: omit evolutionMethodType when standalone.
+
+                Schematron Rules 1g and 1h enforce method consistency with
+                evolutionStage and evolutionMethod.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="Level"/>
+            <xs:enumeration value="Stone"/>
+            <xs:enumeration value="Friendship"/>
+            <xs:enumeration value="Trade"/>
+            <xs:enumeration value="Time"/>
+            <xs:enumeration value="Location"/>
+            <xs:enumeration value="Move"/>
+            <xs:enumeration value="Special"/>
+            <xs:enumeration value="None"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+
+    <!-- =============================================================
+         CONTROLLED VOCABULARY: REGIONAL VARIANT  [CHANGED-02]
+         Design intent: regional forms (Alolan, Galarian, Hisuian,
+         Paldean) are stored as SEPARATE Pokémon Records, not as
+         sub-elements of the base record, because their typing,
+         abilities, and battle characteristics may differ substantially.
+         (리전폼은 타입, 특성, 배틀 특성이 원종과 달라질 수 있기 때문에
+         별도 레코드로 관리한다.)
+         The regionalVariant element identifies WHICH regional form a
+         given record represents; the corresponding dc:identifier must
+         include the matching three-letter suffix (enforced by
+         Schematron Rule 4e).
+    ============================================================== -->
+
+    <!--
+      RegionalVariantType
+      Used by: regionalVariant (optional)
+    -->
+    <xs:simpleType name="RegionalVariantType">
+        <xs:annotation>
+            <xs:documentation>
+                Controlled Vocabulary identifying the regional form represented
+                by this Pokémon record.
+
+                DESIGN INTENT:
+                리전폼은 타입, 특성, 배틀 특성이 원종과 달라질 수 있기 때문에
+                별도 레코드로 관리한다.
+                (Regional forms are managed as separate Pokémon Records because
+                their typing, abilities, and battle characteristics may differ
+                substantially from those of the original form.)
+
+                Allowed values:
+                  None     — Not a regional form. Deprecated: omit this element
+                             instead of writing "None". Schematron Rule 4f warns.
+                  Alolan   — Alola region variant (Generation VII)
+                             Identifier suffix: -ALO (e.g. 037-ALO)
+                  Galarian — Galar region variant (Generation VIII)
+                             Identifier suffix: -GAL (e.g. 052-GAL)
+                  Hisuian  — Hisui / Legends: Arceus variant (Generation VIII)
+                             Identifier suffix: -HIS (e.g. 058-HIS)
+                  Paldean  — Paldea region variant (Generation IX)
+                             Identifier suffix: -PAL (e.g. 194-PAL)
+
+                When this element is present with a non-"None" value, the
+                record's dc:identifier MUST include the three-letter suffix.
+                Schematron Rule 4e enforces this relationship.
+            </xs:documentation>
+        </xs:annotation>
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="None"/>
+            <xs:enumeration value="Alolan"/>
+            <xs:enumeration value="Galarian"/>
+            <xs:enumeration value="Hisuian"/>
+            <xs:enumeration value="Paldean"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+
+    <!-- =============================================================
+         CONTROLLED VOCABULARY: LEGENDARY STATUS
+         Design intent: three-value enumeration distinguishes ordinary
+         Pokémon from story-critical legendaries and event-distributed
+         mythicals. Schematron Rule 3a warns when a Legendary or
+         Mythical Pokémon is assigned an early evolution stage, which
+         is typically inconsistent with game lore.
+    ============================================================== -->
+
+    <!--
+      LegendaryStatusType
+      Used by: legendaryStatus (required)
+    -->
+    <xs:simpleType name="LegendaryStatusType">
+        <xs:annotation>
+            <xs:documentation>
+                Controlled Vocabulary for the rarity / legendary classification
+                of a Pokémon.
+
+                Allowed values:
+                  Normal    — Standard, non-legendary Pokémon found in normal gameplay
+                  Legendary — Story-critical legendary Pokémon; typically Standalone
+                              or Final Evolution and uncatchable until a specific event
+                              (e.g. Mewtwo, Lugia, Rayquaza, Zygarde)
+                  Mythical  — Event-only Pokémon distributed through special promotions;
+                              not normally obtainable in-game
+                              (e.g. Mew, Celebi, Jirachi, Victini)
+            </xs:documentation>
+        </xs:annotation>
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="Normal"/>
+            <xs:enumeration value="Legendary"/>
+            <xs:enumeration value="Mythical"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+
+    <!-- =============================================================
+         CONTROLLED VOCABULARY: GENERATION
+         Design intent: recording the introduction generation allows
+         faceted filtering by game era. Regional forms carry the
+         generation of THEIR OWN introduction, not that of the
+         original species (e.g. Alolan Vulpix → Generation VII,
+         even though Vulpix was introduced in Generation I).
+    ============================================================== -->
+
+    <!--
+      GenerationType
+      Used by: generation (required)
+    -->
+    <xs:simpleType name="GenerationType">
+        <xs:annotation>
+            <xs:documentation>
+                Controlled Vocabulary for the main-series game generation
+                in which this Pokémon (or regional form) was first introduced.
+
+                Allowed values: Generation I through Generation IX.
+
+                Note for regional forms: use the generation of the regional
+                form's introduction, not the generation of the original species.
+                Example: Alolan Vulpix → Generation VII (Sun/Moon, 2016),
+                         not Generation I (Red/Blue, 1996).
+            </xs:documentation>
+        </xs:annotation>
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="Generation I"/>
+            <xs:enumeration value="Generation II"/>
+            <xs:enumeration value="Generation III"/>
+            <xs:enumeration value="Generation IV"/>
+            <xs:enumeration value="Generation V"/>
+            <xs:enumeration value="Generation VI"/>
+            <xs:enumeration value="Generation VII"/>
+            <xs:enumeration value="Generation VIII"/>
+            <xs:enumeration value="Generation IX"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+
+    <!-- =============================================================
+         ROOT ELEMENT: pokemon
+         Design intent: each instance document represents exactly one
+         Pokémon metadata record. Regional forms are separate instance
+         documents (separate records) distinguished by unique identifiers.
+         The root element uses xs:complexType with xs:sequence to enforce
+         element ordering and to allow a mix of Dublin Core ref= elements
+         and locally declared pkm: elements.
+         The required profileVersion attribute enables version-aware
+         processing without embedding version information in the document
+         body.
+    ============================================================== -->
+
+    <xs:element name="pokemon">
+        <xs:annotation>
+            <xs:documentation>
+                Root element representing a single Pokémon metadata record.
+
+                One record = one Pokémon form. Regional forms (Alolan,
+                Galarian, Hisuian, Paldean, etc.) are stored as separate
+                records distinguished by a unique identifier suffix:
+                  e.g. 037-KAN (Kantonian Vulpix) vs 037-ALO (Alolan Vulpix).
+
+                DESIGN INTENT:
+                리전폼은 타입, 특성, 배틀 특성이 원종과 달라질 수 있기 때문에
+                별도 레코드로 관리한다.
+                (Regional forms are managed as separate records because their
+                typing, abilities, and battle characteristics may differ
+                substantially from those of the original form.)
+            </xs:documentation>
+        </xs:annotation>
+        <xs:complexType>
+            <xs:sequence>
+
+                <!-- ─────────────────────────────────────────────────
+                     dc:title  (Dublin Core; required, non-repeatable)
+                     Design intent: dc:title carries the display name
+                     of the Pokémon or regional form (e.g. "Alolan
+                     Vulpix"). Using the Dublin Core element rather
+                     than a custom pkm:name element maintains
+                     interoperability with Dublin Core harvesters.
+                ──────────────────────────────────────────────────── -->
+                <xs:element ref="dc:title">
+                    <xs:annotation>
+                        <xs:documentation>
+                            The name of the Pokémon or regional form as it
+                            appears in official Pokémon game and reference
+                            materials (Dublin Core: Title).
+                            Examples: "Pikachu", "Alolan Vulpix",
+                                      "Galarian Meowth".
+                            Required; must not be blank (enforced by
+                            Schematron Rule 4b).
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+
+                <!-- ─────────────────────────────────────────────────
+                     dc:identifier  (Dublin Core; required, non-repeatable)
+                     Design intent: dc:identifier holds the primary key
+                     for the record and is the value referenced by
+                     evolvesFrom and evolvesTo in related records.
+                     Using Dublin Core identifier maintains crosswalk
+                     compatibility. The PokemonIdentifierType pattern
+                     [0-9]{3}(-[A-Z]{3})? is enforced by Schematron
+                     Rule 4a because a ref= to a Dublin Core element
+                     cannot be redeclared with a custom type in XSD.
+                ──────────────────────────────────────────────────── -->
+                <xs:element ref="dc:identifier">
+                    <xs:annotation>
+                        <xs:documentation>
+                            Unique record key for this Pokémon metadata record
+                            (Dublin Core: Identifier). Follows the
+                            PokemonIdentifierType pattern: three-digit Pokédex
+                            number with an optional three-letter regional suffix.
+
+                            Examples:
+                              025      — Pikachu (canonical)
+                              037      — Vulpix (canonical / Kantonian base)
+                              037-KAN  — Kantonian Vulpix (explicit suffix)
+                              037-ALO  — Alolan Vulpix
+                              052-GAL  — Galarian Meowth
+                              058-HIS  — Hisuian Growlithe
+                              194-PAL  — Paldean Wooper
+
+                            Regional-form records MUST use the suffix to
+                            distinguish them from the base species and from
+                            other regional forms of the same species.
+
+                            Note: XSD cannot apply a custom pattern restriction
+                            to a Dublin Core ref= element; pattern conformance
+                            is enforced by Schematron Rule 4a.
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+
+                <!-- ─────────────────────────────────────────────────
+                     primaryType  (required, non-repeatable)
+                     Design intent: every Pokémon has exactly one primary
+                     type; the xs:enumeration restriction rejects any
+                     value not in the official 18-type list at parse time.
+                     Regional forms may have a different primaryType from
+                     the original species, which is one reason they are
+                     stored as separate records.
+                ──────────────────────────────────────────────────── -->
+                <xs:element name="primaryType" type="pkm:PokemonType">
+                    <xs:annotation>
+                        <xs:documentation>
+                            The primary elemental type of this Pokémon record
+                            (Controlled Vocabulary: PokemonType).
+                            Every Pokémon record has exactly one primary type.
+                            Regional forms may have a different primary type
+                            from the original species.
+                            Example: Vulpix → Fire; Alolan Vulpix → Ice.
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+
+                <!-- ─────────────────────────────────────────────────
+                     secondaryType  (optional, non-repeatable)
+                     Design intent: omitting this element is preferred
+                     for single-type Pokémon. The SecondaryType vocabulary
+                     adds "None" solely for backward compatibility with
+                     records that explicitly populated the field.
+                     Schematron Rule 2b warns when "None" is present.
+                     Schematron Rule 2a ensures primaryType ≠ secondaryType.
+                ──────────────────────────────────────────────────── -->
+                <xs:element name="secondaryType" type="pkm:SecondaryType" minOccurs="0">
+                    <xs:annotation>
+                        <xs:documentation>
+                            The secondary elemental type of a dual-type Pokémon
+                            (Controlled Vocabulary: SecondaryType). Optional.
+                            Omit this element entirely for single-type Pokémon;
+                            do not write "None" (deprecated; Schematron warns).
+                            Regional forms may have a different secondaryType
+                            from the original species.
+                            Example: Alolan Ninetales → secondary type Fairy
+                                     (whereas Kantonian Ninetales has no secondary type).
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+
+                <!-- ─────────────────────────────────────────────────
+                     evolvesFrom  (optional, non-repeatable)  [CHANGED-03]
+                     Design intent: changed from xs:integer to
+                     PokemonIdentifierType (string) so that regional-form
+                     evolution chains can reference the exact regional
+                     record (e.g. 037-ALO) instead of only the species
+                     number (037), which would be ambiguous when both
+                     Kantonian and Alolan forms of Vulpix exist.
+                     Schematron Rule 1d forbids evolvesFrom on Base Form.
+                     Schematron Rule 1b forbids it on Standalone.
+                     Schematron Rule 1i prevents self-reference.
+                ──────────────────────────────────────────────────── -->
+                <xs:element name="evolvesFrom" type="pkm:PokemonIdentifierType" minOccurs="0">
+                    <xs:annotation>
+                        <xs:documentation>
+                            The Pokémon Record Identifier of the pre-evolution
+                            form from which this Pokémon evolves. Optional.
+                            Type: PokemonIdentifierType (pattern [0-9]{3}(-[A-Z]{3})?)
+
+                            Regional-form evolution chains must reference the
+                            exact regional record identifier, not the base
+                            species number alone.
+                            Example: Alolan Ninetales (038-ALO) →
+                                       evolvesFrom = 037-ALO (Alolan Vulpix),
+                                     not evolvesFrom = 037.
+
+                            Schematron Rules 1b, 1d, 1e, 1f, and 1i govern
+                            when this element may or must appear.
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+
+                <!-- ─────────────────────────────────────────────────
+                     evolvesTo  (optional, repeatable)  [CHANGED-03]
+                     Design intent: changed from xs:integer to
+                     PokemonIdentifierType for the same reasons as
+                     evolvesFrom. maxOccurs="unbounded" supports branched
+                     evolution chains (e.g. Eevee has eight evolvesTo
+                     targets). Schematron Rule 4c prevents duplicates.
+                     Schematron Rule 1c forbids it on Standalone.
+                ──────────────────────────────────────────────────── -->
+                <xs:element name="evolvesTo" type="pkm:PokemonIdentifierType" minOccurs="0" maxOccurs="unbounded">
+                    <xs:annotation>
+                        <xs:documentation>
+                            The Pokémon Record Identifier(s) of the form(s) this
+                            Pokémon can evolve into. Optional; repeatable.
+                            Type: PokemonIdentifierType (pattern [0-9]{3}(-[A-Z]{3})?)
+
+                            Multiple evolvesTo elements are used for branched
+                            evolutions (e.g. Eevee has eight possible targets).
+                            Regional-form evolution chains must reference the
+                            exact regional record identifier.
+                            Example: Alolan Vulpix (037-ALO) →
+                                       evolvesTo = 038-ALO (Alolan Ninetales).
+
+                            Schematron Rules 1c, 1d, 1e, 1f, 4c, and 1i govern
+                            when and how this element may appear.
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+
+                <!-- ─────────────────────────────────────────────────
+                     evolutionStage  (required, non-repeatable)
+                     Design intent: a controlled stage label rather than
+                     a numeric stage index makes Schematron rules more
+                     readable and prevents off-by-one errors. This field
+                     is the anchor for all evolution-consistency rules
+                     (Schematron Rules 1a–1f).
+                ──────────────────────────────────────────────────── -->
+                <xs:element name="evolutionStage" type="pkm:EvolutionStageType">
+                    <xs:annotation>
+                        <xs:documentation>
+                            The evolutionary position of this Pokémon within its
+                            family (Controlled Vocabulary: EvolutionStageType).
+                            Required field; governs which other evolution fields
+                            must or must not be present.
+
+                            Allowed values:
+                              Base Form        — First stage; must have evolvesTo,
+                                                 must not have evolvesFrom
+                              Middle Evolution — Must have both evolvesFrom and evolvesTo
+                              Final Evolution  — Must have evolvesFrom, must not have evolvesTo
+                              Standalone       — No evolution chain; evolvesFrom, evolvesTo,
+                                                 evolutionMethodType, evolutionMethod all absent
+
+                            Cross-field rules enforced by Schematron Rules 1a–1f.
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+
+                <!-- ─────────────────────────────────────────────────
+                     evolutionMethodType  (optional, non-repeatable)  [CHANGED-01]
+                     Design intent: a controlled method category enables
+                     faceted searching ("find all Stone evolutions").
+                     Conditional: must be absent when evolutionStage=
+                     "Standalone" (Schematron Rule 1a). Non-standalone
+                     records should use a non-"None" value when an
+                     evolution relationship is recorded (Rule 1g).
+                ──────────────────────────────────────────────────── -->
+                <xs:element name="evolutionMethodType" type="pkm:EvolutionMethodTypeEnum" minOccurs="0">
+                    <xs:annotation>
+                        <xs:documentation>
+                            Controlled Vocabulary category for how this Pokémon
+                            evolves (Controlled Vocabulary: EvolutionMethodTypeEnum).
+                            Optional; conditional on evolutionStage.
+
+                            Must be absent when evolutionStage="Standalone".
+                            Non-standalone records should specify a non-"None"
+                            method when an evolution relationship is recorded.
+
+                            When evolutionMethod (free-text) is present,
+                            evolutionMethodType must also be present and must
+                            not be "None" (Schematron Rule 1h).
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+
+                <!-- ─────────────────────────────────────────────────
+                     evolutionMethod  (optional, non-repeatable)
+                     Design intent: free-text field for detailed evolution
+                     conditions beyond what the controlled category conveys
+                     (e.g. "Level 36 while knowing a Fairy-type move").
+                     NonEmptyString prevents whitespace-only values.
+                     Must be absent when evolutionStage="Standalone"
+                     (Schematron Rule 1a). Requires evolutionMethodType
+                     to be present and non-"None" (Schematron Rule 1h).
+                ──────────────────────────────────────────────────── -->
+                <xs:element name="evolutionMethod" type="pkm:NonEmptyString" minOccurs="0">
+                    <xs:annotation>
+                        <xs:documentation>
+                            Free-text description of the specific evolution
+                            condition for this Pokémon. Optional; cannot be blank.
+
+                            Must be absent when evolutionStage="Standalone".
+                            When present, evolutionMethodType must also be present
+                            with a non-"None" value (Schematron Rule 1h).
+
+                            Examples:
+                              "Level 36"
+                              "Thunder Stone"
+                              "Trade while holding Metal Coat"
+                              "Level up in Coronet Highlands"
+                              "High friendship during daytime"
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+
+                <!-- ─────────────────────────────────────────────────
+                     strongAgainst  (optional, repeatable)
+                     Design intent: recording type matchup metadata in the
+                     record itself supports battle-system queries without
+                     requiring a separate type-chart lookup. Values use
+                     the PokemonType vocabulary so only valid types are
+                     accepted. Schematron Rules 2c–2d prevent overlap with
+                     weakAgainst and reject duplicates.
+                     Note: Ability effects may override these matchups;
+                     see the ability element.
+                ──────────────────────────────────────────────────── -->
+                <xs:element name="strongAgainst" type="pkm:PokemonType" minOccurs="0" maxOccurs="unbounded">
+                    <xs:annotation>
+                        <xs:documentation>
+                            Elemental types that this Pokémon has a battle advantage
+                            against — i.e. types against which this Pokémon's moves
+                            deal super-effective (2×) damage, or types whose moves
+                            deal not-very-effective (0.5×) damage to this Pokémon
+                            (Controlled Vocabulary: PokemonType). Optional; repeatable.
+
+                            Note: Ability effects (see ability element) may modify
+                            or override the standard type-chart matchups recorded here.
+                            Schematron Rule 2c prevents the same type appearing in both
+                            strongAgainst and weakAgainst. Rule 2d prevents duplicates.
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+
+                <!-- ─────────────────────────────────────────────────
+                     weakAgainst  (optional, repeatable)
+                     Design intent: symmetric counterpart to strongAgainst.
+                     Together they encode the relevant rows of the type
+                     chart for this Pokémon without requiring the consumer
+                     to implement the full 18×18 type chart.
+                     Schematron Rules 2c–2e govern overlap and duplicates.
+                ──────────────────────────────────────────────────── -->
+                <xs:element name="weakAgainst" type="pkm:PokemonType" minOccurs="0" maxOccurs="unbounded">
+                    <xs:annotation>
+                        <xs:documentation>
+                            Elemental types that this Pokémon has a battle disadvantage
+                            against — i.e. types whose moves deal super-effective (2×)
+                            damage to this Pokémon, or types against which this Pokémon's
+                            moves deal not-very-effective (0.5×) damage
+                            (Controlled Vocabulary: PokemonType). Optional; repeatable.
+
+                            Note: Ability effects (see ability element) may modify
+                            or override the standard type-chart matchups recorded here.
+                            Schematron Rule 2c prevents the same type appearing in both
+                            strongAgainst and weakAgainst. Rule 2e prevents duplicates.
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+
+                <!-- ─────────────────────────────────────────────────
+                     regionalVariant  (optional, non-repeatable)  [CHANGED-02]
+                     Design intent: this element identifies WHICH regional
+                     form the current record represents. It is kept as a
+                     Controlled Vocabulary (not a boolean flag) to support
+                     faceted filtering by region (e.g. "show all Galarian
+                     forms"). The record itself is separate from the base
+                     species record — not a sub-element — because typing,
+                     abilities, and battle characteristics may differ.
+                ──────────────────────────────────────────────────── -->
+                <xs:element name="regionalVariant" type="pkm:RegionalVariantType" minOccurs="0">
+                    <xs:annotation>
+                        <xs:documentation>
+                            Identifies the regional form represented by this record
+                            (Controlled Vocabulary: RegionalVariantType). Optional.
+
+                            DESIGN INTENT:
+                            리전폼은 타입, 특성, 배틀 특성이 원종과 달라질 수 있기 때문에
+                            별도 레코드로 관리한다.
+                            (Regional forms are managed as separate Pokémon Records because
+                            their typing, abilities, and battle characteristics may differ
+                            substantially from those of the original form.)
+
+                            When this element carries a non-"None" value, the record's
+                            dc:identifier MUST include the corresponding three-letter suffix
+                            (e.g. Alolan record → 037-ALO). Schematron Rule 4e warns
+                            when this constraint is violated.
+
+                            Preferred: omit this element for non-regional Pokémon.
+                            Schematron Rule 4f warns when "None" is explicitly written.
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+
+                <!-- ─────────────────────────────────────────────────
+                     ability  (optional, repeatable)  [CHANGED-04]
+                     Design intent: abilities are metadata elements because
+                     they can modify or override standard type effectiveness
+                     and battle interactions recorded in strongAgainst and
+                     weakAgainst. For example, Levitate grants immunity to
+                     Ground-type moves regardless of the Pokémon's type.
+                     Regional forms often have different abilities from the
+                     original species, reinforcing the separate-record design.
+
+                     AUTHORITY CONTROL rather than xs:enumeration:
+                     The official Pokémon Ability List contains approximately
+                     300 abilities as of Generation IX and grows with each
+                     new generation release. Implementing it as xs:enumeration
+                     would require schema updates with every new game release.
+                     Instead, Authority Control is applied at the data-entry
+                     level: cataloguers must verify ability names against the
+                     official list (Bulbapedia or the Pokémon website).
+                     The schema type is NonEmptyString to prevent blank values.
+                ──────────────────────────────────────────────────── -->
+                <xs:element name="ability" type="pkm:NonEmptyString" minOccurs="0" maxOccurs="unbounded">
+                    <xs:annotation>
+                        <xs:documentation>
+                            An official Pokémon ability possessed by this Pokémon record.
+                            Optional; repeatable (one element per ability slot).
+
+                            AUTHORITY CONTROL:
+                            Ability names MUST follow the official Pokémon Ability List.
+                            Recommended reference sources:
+                              - Bulbapedia Ability list:
+                                https://bulbapedia.bulbagarden.net/wiki/Ability
+                              - Official Pokémon website Pokédex:
+                                https://www.pokemon.com/us/pokedex
+
+                            This element is NOT implemented as xs:enumeration because
+                            the official list contains approximately 300 abilities as of
+                            Generation IX and is extended with each new game release.
+                            Authority control is applied at data-entry level rather than
+                            by schema enumeration.
+
+                            CARDINALITY — up to three ability slots per Pokémon:
+                              Slot 1: Standard ability (always present in-game)
+                              Slot 2: Secondary ability (some Pokémon have two standard abilities)
+                              Slot 3: Hidden ability (obtainable through special in-game methods)
+                            Use one ability element per slot. Schematron Rule 4d prevents
+                            duplicate ability values within the same record.
+
+                            DESIGN INTENT:
+                            Abilities can modify or override the standard type-chart matchups
+                            recorded in strongAgainst and weakAgainst. Examples:
+                              Levitate      — grants immunity to Ground-type moves
+                              Wonder Guard  — only super-effective moves deal damage
+                              Flash Fire    — absorbs Fire-type moves instead of taking damage
+                            Regional forms frequently have different abilities from the original
+                            species (e.g. Alolan Ninetales: Snow Cloak / Snow Warning instead
+                            of Flash Fire / Drought), which is one reason regional forms are
+                            stored as separate records.
+
+                            Examples: Blaze, Torrent, Overgrow, Static, Levitate, Intimidate,
+                            Drought, Drizzle, Sand Stream, Snow Warning, Protean, Multiscale,
+                            Wonder Guard, Huge Power, Swift Swim, Flash Fire, Snow Cloak, ...
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+
+                <!-- ─────────────────────────────────────────────────
+                     legendaryStatus  (required, non-repeatable)
+                     Design intent: a three-value controlled vocabulary
+                     (Normal / Legendary / Mythical) covers all current
+                     official Pokémon rarity tiers. Schematron Rule 3a
+                     warns when a Legendary or Mythical Pokémon is assigned
+                     Base Form or Middle Evolution, which is atypical.
+                ──────────────────────────────────────────────────── -->
+                <xs:element name="legendaryStatus" type="pkm:LegendaryStatusType">
+                    <xs:annotation>
+                        <xs:documentation>
+                            Rarity / legendary classification of this Pokémon
+                            (Controlled Vocabulary: LegendaryStatusType). Required.
+
+                            Allowed values:
+                              Normal    — Standard Pokémon found in normal gameplay
+                              Legendary — Story-critical legendary; typically Standalone
+                                          or Final Evolution
+                              Mythical  — Event-only; distributed through promotions,
+                                          not normally obtainable in-game
+
+                            Schematron Rule 3a warns when a Legendary or Mythical
+                            Pokémon carries evolutionStage "Base Form" or
+                            "Middle Evolution".
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+
+                <!-- ─────────────────────────────────────────────────
+                     generation  (required, non-repeatable)
+                     Design intent: generation is the primary facet for
+                     era-based filtering. Regional forms introduced in
+                     a later generation use THAT generation, not the
+                     generation of the original species, so that
+                     "Generation VII" correctly returns Alolan forms
+                     without requiring users to know the original species.
+                ──────────────────────────────────────────────────── -->
+                <xs:element name="generation" type="pkm:GenerationType">
+                    <xs:annotation>
+                        <xs:documentation>
+                            The main-series game generation in which this Pokémon
+                            (or regional form) was first introduced
+                            (Controlled Vocabulary: GenerationType). Required.
+
+                            For regional forms: use the generation of the regional
+                            form's introduction, not the original species.
+                            Example: Alolan Vulpix → Generation VII
+                                     (not Generation I, when Vulpix was introduced).
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+
+                <!-- ─────────────────────────────────────────────────
+                     dc:description  (Dublin Core; optional, non-repeatable)
+                     Design intent: provides a human-readable narrative
+                     description of the Pokémon. Using the Dublin Core
+                     element maintains interoperability. Optional because
+                     structured fields above carry all machine-actionable
+                     metadata; description is supplementary context only.
+                ──────────────────────────────────────────────────── -->
+                <xs:element ref="dc:description" minOccurs="0">
+                    <xs:annotation>
+                        <xs:documentation>
+                            Optional narrative description of the Pokémon or
+                            regional form in natural language
+                            (Dublin Core: Description). May include lore,
+                            habitat notes, or other contextual information
+                            not captured by the structured metadata elements.
+                            Must not duplicate data already expressed in
+                            structured elements.
+                        </xs:documentation>
+                    </xs:annotation>
+                </xs:element>
+
+            </xs:sequence>
+
+            <!-- ─────────────────────────────────────────────────────
+                 profileVersion attribute  (required)
+                 Design intent: an attribute rather than an element keeps
+                 version metadata out of the content sequence and makes
+                 it accessible to XSD processors before element content
+                 is read. ProfileVersionType pattern (N.N or N.N.N)
+                 prevents free-text version strings.
+            ──────────────────────────────────────────────────────── -->
+            <xs:attribute name="profileVersion" type="pkm:ProfileVersionType" use="required">
+                <xs:annotation>
+                    <xs:documentation>
+                        Version of the Pokémon metadata application profile
+                        applied to this record. Required attribute.
+                        Format: N.N or N.N.N (e.g. 1.0 or 1.0.2).
+                        Enables version-aware processing and migration
+                        without embedding version data in the document body.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:attribute>
+
+        </xs:complexType>
+    </xs:element>
+
+</xs:schema>
